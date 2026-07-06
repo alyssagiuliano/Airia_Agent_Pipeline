@@ -1,0 +1,262 @@
+name: Create Airia Gateway (with Budget and User Group)
+
+on:
+  workflow_dispatch:
+    inputs:
+      gateway_name:
+        description: 'Gateway Name'
+        required: true
+        type: string
+      gateway_description:
+        description: 'Gateway Description'
+        required: false
+        type: string
+        default: ''
+      providers:
+        description: 'Comma-separated list of providers to enable (e.g. Anthropic,OpenAI,AzureOpenAI)'
+        required: true
+        type: string
+        default: 'Anthropic'
+      create_api_key:
+        description: 'Create a Standard gateway API key'
+        required: false
+        type: boolean
+        default: true
+      budget_amount:
+        description: 'Budget Amount in dollars (leave blank to skip budget)'
+        required: false
+        type: string
+        default: ''
+      budget_period:
+        description: 'Budget Period'
+        required: false
+        type: choice
+        default: 'Monthly'
+        options:
+          - Daily
+          - Weekly
+          - Monthly
+          - Yearly
+      budget_stop:
+        description: 'Stop executions when budget is reached'
+        required: false
+        type: boolean
+        default: true
+      user_group_name:
+        description: 'Existing User Group Name to grant access (leave blank to skip)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  API_BASE_URL: https://prodaus.api.airia.ai
+
+jobs:
+  create-gateway-setup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create Gateway
+        id: create_gateway
+        run: |
+          # Build providerConfigurations array from the comma-separated providers input.
+          # Each provider uses the Airia-managed API key (useAiriaApiKey=true).
+          provider_configs=$(echo "${{ inputs.providers }}" \
+            | tr ',' '\n' \
+            | sed 's/^ *//;s/ *$//' \
+            | grep -v '^$' \
+            | jq -R '{provider: ., enabled: true, useAiriaApiKey: true, authMethod: "ApiKey"}' \
+            | jq -s '.')
+
+          payload=$(jq -n \
+            --arg name "${{ inputs.gateway_name }}" \
+            --arg description "${{ inputs.gateway_description }}" \
+            --argjson providerConfigurations "$provider_configs" \
+            '{
+              name: $name,
+              description: $description,
+              enabled: true,
+              providerConfigurations: $providerConfigurations,
+              rules: [],
+              resilienceRules: []
+            }')
+
+          response=$(curl -X POST "${{ env.API_BASE_URL }}/v1/GatewayConfiguration" \
+            -H "Content-Type: application/json" \
+            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
+            -H "x-correlation-id: ${{ github.run_id }}" \
+            -d "$payload" \
+            -w "\n%{http_code}" -s)
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
+            echo "Gateway created successfully"
+            gateway_id=$(echo "$body" | jq -r '.id')
+
+            if [ -z "$gateway_id" ] || [ "$gateway_id" == "null" ]; then
+              echo "Failed to extract gateway ID from response"
+              echo "Response: $body"
+              exit 1
+            fi
+
+            echo "gateway_id=$gateway_id" >> $GITHUB_OUTPUT
+            echo "Gateway ID: $gateway_id"
+          else
+            echo "Failed to create gateway. HTTP Status: $http_code"
+            echo "Response: $body"
+            exit 1
+          fi
+
+      - name: Create Gateway API Key
+        id: create_api_key
+        if: inputs.create_api_key
+        run: |
+          response=$(curl -X POST "${{ env.API_BASE_URL }}/v1/GatewayApiKey" \
+            -H "Content-Type: application/json" \
+            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
+            -H "x-correlation-id: ${{ github.run_id }}" \
+            -d '{
+              "gatewayConfigurationId": "${{ steps.create_gateway.outputs.gateway_id }}",
+              "type": "Standard",
+              "enabled": true
+            }' \
+            -w "\n%{http_code}" -s)
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
+            echo "Gateway API key created successfully"
+            api_key_id=$(echo "$body" | jq -r '.id')
+            echo "api_key_id=$api_key_id" >> $GITHUB_OUTPUT
+            echo "API Key ID: $api_key_id"
+            # NOTE: the raw key value is only returned once by the API; retrieve it
+            # from the Airia console if you need to distribute it.
+          else
+            echo "Failed to create gateway API key. HTTP Status: $http_code"
+            echo "Response: $body"
+            exit 1
+          fi
+
+      - name: Set Gateway Budget
+        id: set_budget
+        if: inputs.budget_amount != ''
+        run: |
+          payload=$(jq -n \
+            --arg gatewayConfigurationUuid "${{ steps.create_gateway.outputs.gateway_id }}" \
+            --argjson budgetAmount "${{ inputs.budget_amount }}" \
+            --arg budgetPeriod "${{ inputs.budget_period }}" \
+            --argjson budgetStop ${{ inputs.budget_stop }} \
+            '{
+              gatewayConfigurationUuid: $gatewayConfigurationUuid,
+              budgetType: "Gateway",
+              budgetAmount: $budgetAmount,
+              budgetPeriod: $budgetPeriod,
+              budgetStop: $budgetStop
+            }')
+
+          response=$(curl -X POST "${{ env.API_BASE_URL }}/api/marketplace/v1/Budgets" \
+            -H "Content-Type: application/json" \
+            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
+            -H "x-correlation-id: ${{ github.run_id }}" \
+            -d "$payload" \
+            -w "\n%{http_code}" -s)
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
+            echo "Gateway budget set successfully"
+            budget_id=$(echo "$body" | jq -r '.budget.id')
+            echo "budget_id=$budget_id" >> $GITHUB_OUTPUT
+            echo "Budget ID: $budget_id"
+          else
+            echo "Failed to set gateway budget. HTTP Status: $http_code"
+            echo "Response: $body"
+            exit 1
+          fi
+
+      - name: Get User Group ID by Name
+        id: get_group
+        if: inputs.user_group_name != ''
+        run: |
+          response=$(curl -X GET "${{ env.API_BASE_URL }}/v1/Groups?pageNumber=1&pageSize=200&sortBy=name&sortDirection=ASC" \
+            -H "Content-Type: application/json" \
+            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
+            -H "x-correlation-id: ${{ github.run_id }}" \
+            -w "\n%{http_code}" -s)
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -eq 200 ]; then
+            echo "Groups retrieved successfully"
+
+            group_id=$(echo "$body" | jq -r '.items[] | select(.name == "${{ inputs.user_group_name }}") | .id' | head -n 1)
+
+            if [ -z "$group_id" ] || [ "$group_id" == "null" ]; then
+              echo "User group with name '${{ inputs.user_group_name }}' not found"
+              echo "Available groups:"
+              echo "$body" | jq -r '.items[] | .name'
+              exit 1
+            fi
+
+            echo "group_id=$group_id" >> $GITHUB_OUTPUT
+            echo "Found Group ID: $group_id"
+          else
+            echo "Failed to retrieve groups. HTTP Status: $http_code"
+            echo "Response: $body"
+            exit 1
+          fi
+
+      - name: Grant Group Access to Gateway
+        if: inputs.user_group_name != ''
+        run: |
+          response=$(curl -X POST "${{ env.API_BASE_URL }}/v1/GatewayConfiguration/access" \
+            -H "Content-Type: application/json" \
+            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
+            -H "x-correlation-id: ${{ github.run_id }}" \
+            -d '{
+              "gatewayConfigurationId": "${{ steps.create_gateway.outputs.gateway_id }}",
+              "groupId": "${{ steps.get_group.outputs.group_id }}",
+              "gatewayUserId": null,
+              "projectId": null
+            }' \
+            -w "\n%{http_code}" -s)
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ] || [ "$http_code" -eq 204 ]; then
+            echo "Group granted access to gateway successfully"
+          else
+            echo "Failed to grant group access. HTTP Status: $http_code"
+            echo "Response: $body"
+            exit 1
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Gateway Setup Complete :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gateway Name:** ${{ inputs.gateway_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gateway ID:** ${{ steps.create_gateway.outputs.gateway_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Providers Enabled:** ${{ inputs.providers }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ inputs.create_api_key }}" == "true" ]; then
+            echo "- **API Key ID:** ${{ steps.create_api_key.outputs.api_key_id }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -n "${{ inputs.budget_amount }}" ]; then
+            echo "- **Budget:** \$${{ inputs.budget_amount }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Budget Period:** ${{ inputs.budget_period }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Budget Stop:** ${{ inputs.budget_stop }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Budget ID:** ${{ steps.set_budget.outputs.budget_id }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -n "${{ inputs.user_group_name }}" ]; then
+            echo "- **User Group:** ${{ inputs.user_group_name }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Group ID:** ${{ steps.get_group.outputs.group_id }}" >> $GITHUB_STEP_SUMMARY
+          fi
