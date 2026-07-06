@@ -96,37 +96,6 @@ jobs:
             exit 1
           fi
 
-      - name: Create Gateway API Key
-        id: create_api_key
-        if: inputs.create_api_key
-        run: |
-          response=$(curl -X POST "${{ env.API_BASE_URL }}/v1/GatewayApiKey" \
-            -H "Content-Type: application/json" \
-            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
-            -H "x-correlation-id: ${{ github.run_id }}" \
-            -d '{
-              "gatewayConfigurationId": "${{ steps.create_gateway.outputs.gateway_id }}",
-              "type": "Standard",
-              "enabled": true
-            }' \
-            -w "\n%{http_code}" -s)
-
-          http_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | sed '$d')
-
-          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
-            echo "Gateway API key created successfully"
-            api_key_id=$(echo "$body" | jq -r '.id')
-            echo "api_key_id=$api_key_id" >> $GITHUB_OUTPUT
-            echo "API Key ID: $api_key_id"
-            # NOTE: the raw key value is only returned once by the API; retrieve it
-            # from the Airia console if you need to distribute it.
-          else
-            echo "Failed to create gateway API key. HTTP Status: $http_code"
-            echo "Response: $body"
-            exit 1
-          fi
-
       - name: Set Gateway Budget
         id: set_budget
         if: inputs.budget_amount != ''
@@ -225,6 +194,40 @@ jobs:
             exit 1
           fi
 
+      - name: Create Gateway API Key
+        id: create_api_key
+        # Runs last and is best-effort: this endpoint can 404 when called with an
+        # X-API-KEY principal (vs a user session), so a failure here must not block
+        # the core gateway/budget/group provisioning above.
+        if: inputs.create_api_key
+        continue-on-error: true
+        run: |
+          response=$(curl -X POST "${{ env.API_BASE_URL }}/v1/GatewayApiKey" \
+            -H "Content-Type: application/json" \
+            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
+            -H "x-correlation-id: ${{ github.run_id }}" \
+            -d '{
+              "gatewayConfigurationId": "${{ steps.create_gateway.outputs.gateway_id }}",
+              "type": "Standard",
+              "enabled": true
+            }' \
+            -w "\n%{http_code}" -s)
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
+            echo "Gateway API key created successfully"
+            api_key_id=$(echo "$body" | jq -r '.id')
+            echo "api_key_id=$api_key_id" >> $GITHUB_OUTPUT
+            echo "API Key ID: $api_key_id"
+            # NOTE: the raw key value is only returned once by the API; retrieve it
+            # from the Airia console if you need to distribute it.
+          else
+            echo "::warning::Could not create gateway API key (HTTP $http_code). The gateway, budget, and group access were still provisioned. Create the key in the Airia console if needed."
+            echo "Response: $body"
+          fi
+
       - name: Summary
         run: |
           echo "## Gateway Setup Complete :rocket:" >> $GITHUB_STEP_SUMMARY
@@ -233,8 +236,10 @@ jobs:
           echo "- **Gateway ID:** ${{ steps.create_gateway.outputs.gateway_id }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Providers Enabled:** ${{ inputs.providers }}" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ inputs.create_api_key }}" == "true" ]; then
+          if [ -n "${{ steps.create_api_key.outputs.api_key_id }}" ]; then
             echo "- **API Key ID:** ${{ steps.create_api_key.outputs.api_key_id }}" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ inputs.create_api_key }}" == "true" ]; then
+            echo "- **API Key:** :warning: not created (see logs) — create it in the Airia console" >> $GITHUB_STEP_SUMMARY
           fi
 
           if [ -n "${{ inputs.budget_amount }}" ]; then
