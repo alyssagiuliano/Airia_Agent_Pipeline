@@ -7,11 +7,6 @@ on:
         description: 'Gateway Name'
         required: true
         type: string
-      gateway_description:
-        description: 'Gateway Description'
-        required: false
-        type: string
-        default: ''
       providers:
         description: 'Comma-separated list of providers to enable (e.g. Anthropic,OpenAI,AzureOpenAI)'
         required: true
@@ -36,12 +31,6 @@ on:
           - Daily
           - Weekly
           - Monthly
-          - Yearly
-      budget_stop:
-        description: 'Stop executions when budget is reached'
-        required: false
-        type: boolean
-        default: true
       user_group_name:
         description: 'Existing User Group Name to grant access (leave blank to skip)'
         required: false
@@ -70,11 +59,9 @@ jobs:
 
           payload=$(jq -n \
             --arg name "${{ inputs.gateway_name }}" \
-            --arg description "${{ inputs.gateway_description }}" \
             --argjson providerConfigurations "$provider_configs" \
             '{
               name: $name,
-              description: $description,
               enabled: true,
               providerConfigurations: $providerConfigurations,
               rules: [],
@@ -148,13 +135,11 @@ jobs:
             --arg gatewayConfigurationUuid "${{ steps.create_gateway.outputs.gateway_id }}" \
             --argjson budgetAmount "${{ inputs.budget_amount }}" \
             --arg budgetPeriod "${{ inputs.budget_period }}" \
-            --argjson budgetStop ${{ inputs.budget_stop }} \
             '{
               gatewayConfigurationUuid: $gatewayConfigurationUuid,
               budgetType: "Gateway",
               budgetAmount: $budgetAmount,
-              budgetPeriod: $budgetPeriod,
-              budgetStop: $budgetStop
+              budgetPeriod: $budgetPeriod
             }')
 
           response=$(curl -X POST "${{ env.API_BASE_URL }}/api/marketplace/v1/Budgets" \
@@ -252,7 +237,6 @@ jobs:
           if [ -n "${{ inputs.budget_amount }}" ]; then
             echo "- **Budget:** \$${{ inputs.budget_amount }}" >> $GITHUB_STEP_SUMMARY
             echo "- **Budget Period:** ${{ inputs.budget_period }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **Budget Stop:** ${{ inputs.budget_stop }}" >> $GITHUB_STEP_SUMMARY
             echo "- **Budget ID:** ${{ steps.set_budget.outputs.budget_id }}" >> $GITHUB_STEP_SUMMARY
           fi
 
