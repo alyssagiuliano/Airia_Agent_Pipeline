@@ -142,9 +142,12 @@ jobs:
               budgetPeriod: $budgetPeriod
             }')
 
+          # NOTE: the /api/marketplace/* service authenticates via a Bearer token
+          # (responds "www-authenticate: Bearer"), unlike the /v1/* endpoints which
+          # use the X-API-KEY header.
           response=$(curl -X POST "${{ env.API_BASE_URL }}/api/marketplace/v1/Budgets" \
             -H "Content-Type: application/json" \
-            -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.AIRIA_API_TOKEN }}" \
             -H "x-correlation-id: ${{ github.run_id }}" \
             -d "$payload" \
             -w "\n%{http_code}" -s)
