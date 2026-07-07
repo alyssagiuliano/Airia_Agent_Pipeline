@@ -196,18 +196,17 @@ jobs:
 
       - name: Create Gateway API Key
         id: create_api_key
-        # Runs last, after the gateway has had time to propagate. A gateway queried
-        # immediately after creation returns 404 from the GatewayApiKey service; a
-        # short settle delay lets it become queryable.
+        # The /v1/GatewayApiKey endpoint requires x-correlation-id to be a GUID and
+        # returns 404 for a non-GUID value (e.g. the numeric github.run_id), so we
+        # generate a UUID for the correlation id here.
         if: inputs.create_api_key
         run: |
-          # Give the newly created gateway time to propagate before requesting a key.
-          sleep 10
+          correlation_id=$(cat /proc/sys/kernel/random/uuid)
 
           response=$(curl -X POST "${{ env.API_BASE_URL }}/v1/GatewayApiKey" \
             -H "Content-Type: application/json" \
             -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
-            -H "x-correlation-id: ${{ github.run_id }}" \
+            -H "x-correlation-id: $correlation_id" \
             -d '{
               "gatewayConfigurationId": "${{ steps.create_gateway.outputs.gateway_id }}",
               "type": "Standard",
