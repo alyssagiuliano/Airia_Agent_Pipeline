@@ -196,12 +196,14 @@ jobs:
 
       - name: Create Gateway API Key
         id: create_api_key
-        # Runs last and is best-effort: this endpoint can 404 when called with an
-        # X-API-KEY principal (vs a user session), so a failure here must not block
-        # the core gateway/budget/group provisioning above.
+        # Runs last, after the gateway has had time to propagate. A gateway queried
+        # immediately after creation returns 404 from the GatewayApiKey service; a
+        # short settle delay lets it become queryable.
         if: inputs.create_api_key
-        continue-on-error: true
         run: |
+          # Give the newly created gateway time to propagate before requesting a key.
+          sleep 10
+
           response=$(curl -X POST "${{ env.API_BASE_URL }}/v1/GatewayApiKey" \
             -H "Content-Type: application/json" \
             -H "X-API-KEY: ${{ secrets.AIRIA_API_TOKEN }}" \
@@ -224,8 +226,9 @@ jobs:
             # NOTE: the raw key value is only returned once by the API; retrieve it
             # from the Airia console if you need to distribute it.
           else
-            echo "::warning::Could not create gateway API key (HTTP $http_code). The gateway, budget, and group access were still provisioned. Create the key in the Airia console if needed."
+            echo "Failed to create gateway API key. HTTP Status: $http_code"
             echo "Response: $body"
+            exit 1
           fi
 
       - name: Summary
